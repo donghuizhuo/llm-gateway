@@ -7,7 +7,7 @@ class ProviderRateLimitError(LLMGatewayError):
 
     def __init__(
         self,
-        message: str = "Provider request timed out.",
+        message: str = "Provider request rate limited.",
         retry_after: float | None = None,
     ):
         super().__init__(message)

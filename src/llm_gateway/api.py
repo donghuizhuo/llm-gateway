@@ -1,15 +1,38 @@
+from contextlib import asynccontextmanager
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from llm_gateway.async_service import generate_with_retry_async
 from llm_gateway.exceptions import ProviderRateLimitError, ProviderTimeoutError
+from llm_gateway.http_provider import HTTPProvider
 from llm_gateway.models import AskRequest
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with httpx.AsyncClient() as client:
+        app.state.http_client = client
+        yield
+
+
 app = FastAPI(
-    title="LLM Gateway", version="0.1.0", description="A gateway for LLM providers."
+    title="LLM Gateway",
+    version="0.1.0",
+    lifespan=lifespan,
+    description="A gateway for LLM providers.",
 )
+
+
+def get_http_client(request: Request) -> httpx.AsyncClient:
+    return request.app.state.http_client
+
+
+@app.get("/client-status")
+async def client_status(client: Annotated[httpx.AsyncClient, Depends(get_http_client)]):
+    return {"is_closed": client.is_closed, "client_id": id(client)}
 
 
 @app.get("/test-rate-limit", tags=["Test"])
@@ -57,13 +80,31 @@ class FakeProvider:
         return f"Fake answer to: {question}"
 
 
-def get_provider():
-    return FakeProvider()
+def get_provider(
+        client: Annotated[httpx.AsyncClient, Depends(get_http_client)]
+    ) -> HTTPProvider:
+    return HTTPProvider(
+        client=client,
+        url="https://example.com/generate"
+    )
 
 
 @app.post("/ask")
 async def ask(
-    question: AskRequest, provider: Annotated[FakeProvider, Depends(get_provider)]
+    request: AskRequest,
+    provider: Annotated[HTTPProvider, Depends(get_provider)]
 ):
-    result = await generate_with_retry_async(provider, question.question)
-    return {"answer": result}
+    answer = await generate_with_retry_async(
+        provider=provider,
+        question=request.question,
+        max_attempts=3,
+        attempt_timeout=3
+    )
+    return {"answer": answer}
+
+
+@app.get("/query")
+async def query():
+    async with httpx.AsyncClient() as client:
+        response = await client.get("https://example.com")
+        return {"result": response.text}
